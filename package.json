@@ -1,0 +1,23 @@
+{
+  "name": "mesh-avatar-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "上传一张图，在浏览器内自动生成会眨眼、会呼吸的 2D 动画形象。纯前端静态站点，图片不上传。",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "npx --yes serve@14 . --listen 5173 --no-clipboard",
+    "dev": "npx --yes serve@14 . --listen 5173 --no-clipboard",
+    "serve:py": "python3 serve.py 5173"
+  },
+  "keywords": [
+    "mesh",
+    "avatar",
+    "mediapipe",
+    "webgl2",
+    "2d-animation"
+  ],
+  "license": "MIT"
+}

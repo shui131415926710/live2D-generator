@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mesh Avatar Studio · 上传一张图，让它动起来</title>
+<meta name="description" content="在浏览器里把一张立绘变成会眨眼、会呼吸的 2D 动画形象。图片不会离开你的设备。" />
+<link rel="stylesheet" href="./assets/app.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0D12'/%3E%3Cpath d='M6 22 L16 8 L26 22' stroke='%238B72FF' stroke-width='2' fill='none'/%3E%3Ccircle cx='16' cy='14' r='2.5' fill='%233DD6D0'/%3E%3C/svg%3E" />
+</head>
+<body>
+<div class="app" id="app" data-state="idle">
+
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Mesh Avatar Studio 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="站标">
+          <rect width="32" height="32" rx="9" fill="#141821"/>
+          <path d="M6.5 22.5 L16 8.5 L25.5 22.5" stroke="#8B72FF" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+          <path d="M10.5 22.5 L16 14 L21.5 22.5" stroke="#3DD6D0" stroke-width="1.2" fill="none" opacity=".55" stroke-linecap="round"/>
+          <circle cx="16" cy="14.6" r="2.2" fill="#3DD6D0"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <span class="brand-name">Mesh Avatar Studio</span>
+        <span class="brand-sub">2D 动画形象生成器</span>
+      </span>
+    </a>
+    <div class="topbar-right">
+      <span class="badge badge-local" title="所有图像处理都在你的浏览器内完成">
+        <span class="dot" aria-hidden="true"></span>本地处理 · 不上传
+      </span>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <!-- ── 左栏：输入与控制 ───────────────────────────── -->
+    <section class="col-input" aria-labelledby="h-upload">
+
+      <!-- 空态 / 上传态 -->
+      <div class="panel panel-upload">
+        <div class="panel-head">
+          <h1 id="h-upload" class="title-hero">上传一张图<br/><span class="title-accent">让它自己动起来</span></h1>
+          <p class="lede">拖进来，十几秒后得到一个会眨眼、会呼吸的 2D 形象。不注册、不安装、图片不出你的浏览器。</p>
+        </div>
+
+        <div class="dropzone" id="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint privacy-note">
+          <input type="file" id="file-input" class="sr-only" accept="image/png,image/jpeg,image/webp,image/gif" />
+          <div class="dz-inner">
+            <div class="dz-icon" id="dz-icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="44" height="44" role="img" aria-label="上传图标">
+                <path d="M24 31V13m0 0-7 7m7-7 7 7" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M10 30v5a3 3 0 0 0 3 3h22a3 3 0 0 0 3-3v-5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <p class="dz-title" id="dz-title">把图片拖到这里</p>
+            <p class="dz-hint" id="drop-hint">或 <span class="dz-link">点击选择文件</span> · 也支持 Ctrl/⌘ + V 粘贴</p>
+            <p class="dz-formats">PNG · JPG · WebP · GIF（取首帧）　单张 ≤ 20&nbsp;MB</p>
+          </div>
+        </div>
+
+        <p class="privacy-note" id="privacy-note">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.6 13 3.6v4.2c0 3.3-2.2 5.9-5 6.6-2.8-.7-5-3.3-5-6.6V3.6z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+          图片只在你本机浏览器里处理，<strong>不会上传到任何服务器</strong>。刷新页面即清除。
+        </p>
+
+        <ul class="features" aria-label="本站能做什么">
+          <li><span class="f-dot f-dot-a" aria-hidden="true"></span>自动眨眼</li>
+          <li><span class="f-dot f-dot-b" aria-hidden="true"></span>呼吸起伏</li>
+          <li><span class="f-dot f-dot-c" aria-hidden="true"></span>轻微转头</li>
+          <li><span class="f-dot f-dot-d" aria-hidden="true"></span>透明 PNG 导出</li>
+        </ul>
+      </div>
+
+      <!-- 已选图片信息（reading 之后出现） -->
+      <div class="panel panel-file" id="panel-file" hidden>
+        <div class="thumb-wrap">
+          <img id="thumb" class="thumb" alt="已选图片的缩略预览" />
+        </div>
+        <div class="file-meta">
+          <p class="file-name" id="file-name">—</p>
+          <p class="file-dim" id="file-dim">—</p>
+          <p class="file-status" id="file-status" aria-live="polite">—</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btn-replace" type="button">换一张</button>
+      </div>
+
+      <!-- 处理中：四段进度 + 取消 -->
+      <div class="panel panel-progress" id="panel-progress" hidden aria-labelledby="h-progress">
+        <h2 id="h-progress" class="title-sm">正在把这张图变成可动的形象</h2>
+        <ol class="steps" id="steps">
+          <li class="step" data-step="1"><span class="step-mark" aria-hidden="true"></span><span class="step-text">识别画面中的人脸</span></li>
+          <li class="step" data-step="2"><span class="step-mark" aria-hidden="true"></span><span class="step-text">定位眼睛、嘴巴和轮廓</span></li>
+          <li class="step" data-step="3"><span class="step-mark" aria-hidden="true"></span><span class="step-text">生成动作网格与权重</span></li>
+          <li class="step" data-step="4"><span class="step-mark" aria-hidden="true"></span><span class="step-text">准备第一帧</span></li>
+        </ol>
+        <div class="bar" role="progressbar" id="bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="progress-label">
+          <span class="bar-fill" id="bar-fill"></span>
+        </div>
+        <div class="progress-foot">
+          <span class="progress-label" id="progress-label">准备中…</span>
+          <span class="progress-time" id="progress-time">0.0 s</span>
+        </div>
+        <p class="progress-sub" id="progress-sub"></p>
+        <button class="btn btn-ghost btn-block" id="btn-cancel" type="button">取消</button>
+      </div>
+
+      <!-- 成功 / 降级：控制区 -->
+      <div class="panel panel-controls" id="panel-controls" hidden aria-labelledby="h-play">
+        <div class="panel-head panel-head-tight">
+          <h2 id="h-play" class="title-sm">播放控制</h2>
+          <span class="status-pill" id="status-pill">已生成</span>
+        </div>
+
+        <div class="notice notice-info" id="notice-degraded" hidden>
+          <span class="notice-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.6v4.2M8 11.1v.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </span>
+          <div class="notice-body">
+            <p class="notice-title" id="degraded-title">已启用降级效果</p>
+            <p class="notice-text" id="degraded-text"></p>
+            <details class="notice-details" id="degraded-details">
+              <summary>为什么少了某些效果</summary>
+              <p id="degraded-why"></p>
+            </details>
+          </div>
+        </div>
+
+        <div class="labels" id="labels" aria-label="本次实际启用的效果"></div>
+
+        <div class="playbar">
+          <button class="btn btn-primary btn-play" id="btn-play" type="button" aria-pressed="true">
+            <svg class="ico-pause" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9" y="3" width="3" height="10" rx="1" fill="currentColor"/></svg>
+            <svg class="ico-play" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M5 3.5v9l8-4.5z" fill="currentColor"/></svg>
+            <span id="play-label">暂停</span>
+          </button>
+          <button class="btn btn-ghost" id="btn-reset" type="button">
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3 8a5 5 0 1 1 1.7 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3 4v3.4h3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            重置姿态
+          </button>
+        </div>
+
+        <button class="btn btn-cta btn-block" id="btn-export" type="button">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 2.6v8m0 0 3-3M8 10.6 5 7.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 12.4h10.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          导出当前帧 PNG
+        </button>
+        <p class="export-note" id="export-note">导出为透明 PNG，分辨率与处理图一致，文件名带时间戳。</p>
+        <div class="export-result" id="export-result" hidden aria-live="polite"></div>
+      </div>
+
+      <!-- 失败态 -->
+      <div class="panel panel-error" id="panel-error" hidden aria-labelledby="h-error">
+        <h2 id="h-error" class="title-sm">没能生成这个头像</h2>
+        <p class="error-text" id="error-text"></p>
+        <ul class="advice" id="error-advice"></ul>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-retry" type="button">重试</button>
+          <button class="btn btn-ghost" id="btn-another" type="button">上传另一张图</button>
+        </div>
+        <div class="btn-row" id="row-force" hidden>
+          <button class="btn btn-quiet btn-block" id="btn-force" type="button">仍然尝试生成（效果可能不符合预期）</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 右栏：舞台 ─────────────────────────────── -->
+    <section class="col-stage" aria-labelledby="h-stage">
+      <div class="stage" id="stage">
+        <div class="stage-head">
+          <h2 id="h-stage" class="title-sm stage-title">预览舞台</h2>
+          <div class="stage-meta" id="stage-meta"></div>
+        </div>
+
+        <div class="canvas-wrap" id="canvas-wrap" data-empty="true">
+          <!-- 空态示意：mesh 线框动画 -->
+          <div class="stage-empty" id="stage-empty">
+            <canvas class="empty-mesh" id="empty-mesh" width="720" height="720" aria-hidden="true"></canvas>
+            <div class="empty-copy">
+              <p class="empty-title">等待一张立绘</p>
+              <p class="empty-sub">正面、头肩入画、透明背景的图效果最好<br/>没有也没关系，会自动降级并告诉你</p>
+            </div>
+          </div>
+
+          <div class="checker" id="checker">
+            <canvas id="gl" class="stage-canvas" width="16" height="16"
+                    role="img" aria-label="角色动画预览画布，可通过下方按钮播放或暂停"></canvas>
+          </div>
+
+          <!-- 多人脸选择态 -->
+          <div class="face-picker" id="face-picker" hidden>
+            <div class="face-picker-head">
+              <p class="fp-title" id="fp-title">这张图里有多个面孔</p>
+              <p class="fp-sub">选一个作为头像主角，其余区域按背景处理</p>
+            </div>
+            <div class="fp-canvas-box">
+              <img id="fp-img" class="fp-img" alt="含多张人脸的待选图片" />
+              <div class="fp-hit" id="fp-hit"></div>
+            </div>
+            <div class="fp-list" id="fp-list"></div>
+            <button class="btn btn-ghost btn-block" id="btn-fp-cancel" type="button">换一张图</button>
+          </div>
+
+          <div class="stage-overlay-hint" id="stage-hint">拖入图片开始</div>
+        </div>
+
+        <div class="stage-foot">
+          <p class="stage-caption" id="stage-caption">透明背景以棋盘格显示。画面按原图比例缩放，不会拉伸。</p>
+        </div>
+      </div>
+
+      <div class="panel panel-about">
+        <h2 class="title-sm">它会怎么做</h2>
+        <ol class="how">
+          <li><span class="how-n">01</span><div><p class="how-t">在你的浏览器里识别五官</p><p class="how-d">用本地点位模型找眼睛、嘴巴和脸轮廓；识不出来时改用形状先验兜底，不会硬猜。</p></div></li>
+          <li><span class="how-n">02</span><div><p class="how-t">生成动作网格</p><p class="how-d">把图切成网格顶点，烘焙好呼吸、转头、眨眼各自的权重，只移动该动的地方。</p></div></li>
+          <li><span class="how-n">03</span><div><p class="how-t">程序化待机动画</p><p class="how-d">不预录视频，靠参数实时驱动。眨眼间隔随机，不会机械重复。</p></div></li>
+        </ol>
+        <p class="about-note">这是一个自动出片工具，不做逐点人工精修。放大细看会有瑕疵，正常观看距离下可用——我们在页面里如实标注每条降级。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p class="foot-note">图片不上传、不落盘、不进任何第三方服务。处理全部发生在你的浏览器内存里。</p>
+    <p class="foot-note foot-dim">请使用你有权使用的图片。对带完整背景的图会保留背景，不会自动抠图。</p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+
+<script type="module" src="./assets/app.js"></script>
+</body>
+</html>
