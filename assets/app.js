@@ -7,11 +7,14 @@
 
 import { LIMITS, checkFile, describeBytes } from './engine/validate.js';
 import { normalize } from './engine/decode.js';
-import { detectFaces, loadLandmarker, detectorState } from './engine/detect.js';
+import { detectFaces, loadLandmarker, detectorState, blockMediaPipeTelemetry } from './engine/detect.js';
 import { buildPreciseRig, buildPriorRig, buildMinimalRig } from './engine/rig.js';
 import { buildMesh } from './engine/mesh.js';
 import { Motion } from './engine/motion.js';
 import { Renderer } from './engine/renderer.js';
+
+// P1-04：在任何检测逻辑之前装好拦截，确保统计上报请求发不出去。
+blockMediaPipeTelemetry();
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,6 +55,7 @@ const S = {
   playing: true,
   raf: 0,
   lastT: 0,
+  freezeEyeOpen: null,   // 测试接缝：非空时主循环重绘该 eyeOpen 而不推进动画（仅 ?debug=1 可用）
   abort: false,
   t0: 0,
   tick: 0,
@@ -64,10 +68,57 @@ const S = {
   drawAcc: 0,
   drawN: 0,
   minEye: 1,
+  reduced: false,
 };
 
 const SLOW_HINT_MS = 15000;   // P0-15：15 秒未完成给出解释
 const HARD_TIMEOUT_MS = 60000; // P0-15：60 秒兜底超时
+
+/* ── P0-9：系统「减少动态效果」偏好 ──────────────────────────
+   必须在主循环里真实读取 matchMedia，并监听其变化；
+   开启时保留眨眼（PRD 明确要求），关掉呼吸 / 转头 / 身体摆动 / 视线漂移，
+   同时把能力标签改成实际启用的那一组，不能让界面继续声称有这些效果。
+   ──────────────────────────────────────────────────────── */
+const RM_QUERY = '(prefers-reduced-motion: reduce)';
+const MQ = (typeof window !== 'undefined' && window.matchMedia)
+  ? window.matchMedia(RM_QUERY)
+  : null;
+
+function prefersReduced() { return !!(MQ && MQ.matches); }
+
+function applyReducedMotion(on) {
+  S.reduced = !!on;
+  if (S.motion) S.motion.setReducedMotion(S.reduced);
+  // 能力标签同步：减少动态时只剩眨眼
+  if (S.caps && (S.mode === 'success' || S.mode === 'degraded')) {
+    renderChips(S.reduced ? reducedCaps(S.caps) : S.caps);
+  }
+  if (S.renderer && S.rig) S.renderer.draw(S.motion ? S.motion.state : S.rig, S.rig);
+  window.__mas = Object.assign(window.__mas || {}, {
+    reducedMotion: S.reduced,
+    reducedQuery: RM_QUERY,
+  });
+}
+
+/** 减少动态时实际启用的能力：只留眨眼 */
+function reducedCaps(caps) {
+  return {
+    blink: !!caps.blink,
+    breath: false,
+    head: false,
+    body: false,
+    strands: false,
+    gaze: false,
+  };
+}
+
+if (MQ) {
+  if (typeof MQ.addEventListener === 'function') {
+    MQ.addEventListener('change', (e) => applyReducedMotion(e.matches));
+  } else if (typeof MQ.addListener === 'function') {
+    MQ.addListener((e) => applyReducedMotion(e.matches));
+  }
+}
 
 /* ── 小工具 ── */
 function fmtBytes(n) { return describeBytes(n); }
@@ -105,11 +156,28 @@ function setState(name) {
     });
   }
   if (name === 'idle') {
-    el.canvasWrap.dataset.empty = 'true';
-    el.gl.classList.remove('is-live');
-    el.stageHint.textContent = '拖入图片开始';
-    el.stageMeta.textContent = '';
+    clearStage();
   }
+}
+
+/**
+ * P1-03：把舞台复位到空态。
+ * 出错 / 取消 / 重置时必须调用，避免上一张图的画面和标签残留在新状态下。
+ */
+function clearStage() {
+  S.rig = null;
+  S.mesh = null;
+  S.motion = null;
+  S.playing = true;
+  S.lastT = 0;
+  S.minEye = 1;
+  el.canvasWrap.dataset.empty = 'true';
+  el.gl.classList.remove('is-live');
+  el.stageHint.textContent = '拖入图片开始';
+  el.stageMeta.textContent = '';
+  if (el.labels) el.labels.innerHTML = '';
+  // 画布本身也擦掉，否则 is-live 移除后仍会透出最后一帧
+  if (S.renderer && typeof S.renderer.clear === 'function') S.renderer.clear();
 }
 
 function setStep(n) {
@@ -229,11 +297,40 @@ function onFile(file) {
 }
 
 function adviceFor(kind) {
+  // P1-07：按错误类型给针对性建议，不再所有非体积错误都落同一段通用文案
   if (kind === 'size') {
     return [
       '把图片导出时长边压到 2000px 以内，通常就能压到 20 MB 以下。',
       '换成 JPG 或 WebP 格式重新导出，体积会小很多。',
       '如果图本来就不大，可能是文件系统里存的是原图，先用图片工具压缩一次。',
+    ];
+  }
+  if (kind === 'filesize') {
+    return [
+      '这张图的尺寸（像素）本身没问题，是文件体积太大：先用图片工具另存为 JPG（质量 85 左右）。',
+      '或者把长边压到 3000px 以内再拖进来。',
+      '带大量图层的 PNG 体积会很大，导出成「扁平化 PNG」也能显著减小。',
+    ];
+  }
+  if (kind === 'small') {
+    return [
+      '换一张短边至少 256px 的图；太小的话五官定位会失稳。',
+      '如果手上只有小图，先用图片工具放大 2 倍再试一次（放大后仍可能不准）。',
+      '截图保存时选「原始尺寸」，不要选缩略图。',
+    ];
+  }
+  if (kind === 'faces') {
+    return [
+      '把角色头部放到画面里更大一些，最好占画面四分之一以上。',
+      '换一张正脸、无遮挡的图：侧脸、背影、被手或道具挡住都会让五官定位失准。',
+      '多人合影请先裁剪出要用的那一个人，再单独上传。',
+    ];
+  }
+  if (kind === 'count') {
+    return [
+      '同一张图里有多个面孔时，请只保留主角、裁掉其他人物后再上传。',
+      '或者在上传后用选脸面板指定一个主角。',
+      '人物占比过小时，先裁剪到以头部为主体。',
     ];
   }
   return [
@@ -280,6 +377,12 @@ async function startPipeline(file, format, opts = {}) {
     el.fileStatus.textContent = '未上传 · 仅在本机浏览器内处理';
 
     // PRD §4.7：无透明背景在 S1 就提示
+    // P1-01：GIF 只取首帧，必须如实说明，不能让用户以为会动
+    if (img.gifFrameCount && img.gifFrameCount > 1) {
+      el.progressSub.textContent =
+        `已取第 1 帧（这份 GIF 共 ${img.gifFrameCount} 帧）——本工具只处理静态单帧。`;
+    }
+
     if (img.noTransparency) {
       el.fileStatus.className = 'file-status is-warn';
       el.fileStatus.textContent = '这张图没有透明背景，处理后会保留背景。';
@@ -387,6 +490,9 @@ async function buildAndPlay(img, face, opts = {}) {
   S.renderer.setMesh(mesh);
 
   S.motion = new Motion(rig, caps);
+  // P0-9：从第一帧就应用系统偏好，不要等用户切换一次才生效
+  S.motion.setReducedMotion(prefersReduced());
+  S.reduced = prefersReduced();
   S.playing = true;
   S.minEye = 1;
   updatePlayButton();
@@ -454,6 +560,26 @@ const CHIP_TEXT = {
    第三部分：结果页 / 说明页 / 多人脸选择态 / 播放 / 导出 / 接线
    ============================================================ */
 
+/* ── 能力标签：只列实际启用的（showResult 与减少动态切换共用） ── */
+function renderChips(caps) {
+  el.labels.innerHTML = '';
+  const order = ['blink', 'breath', 'head', 'body', 'gaze'];
+  for (const k of order) {
+    if (!caps[k]) continue;
+    const b = document.createElement('span');
+    b.className = 'label-chip';
+    b.textContent = CHIP_TEXT[k];
+    el.labels.appendChild(b);
+  }
+  // 减少动态时明确告知用户少了什么，避免「标签变少了但不知道为什么」
+  if (S.reduced) {
+    const note = document.createElement('span');
+    note.className = 'label-chip label-chip-note';
+    note.textContent = '已按系统偏好减少动态';
+    el.labels.appendChild(note);
+  }
+}
+
 /* ── 结果页 ── */
 function showResult(rig, caps, img, degraded) {
   setState(degraded ? 'degraded' : 'success');
@@ -461,18 +587,8 @@ function showResult(rig, caps, img, degraded) {
   el.statusPill.textContent = degraded ? '已降级生成' : '已生成';
   el.statusPill.classList.toggle('is-degraded', !!degraded);
 
-  // 能力标签：只列实际启用的
-  el.labels.innerHTML = '';
-  const order = ['blink', 'breath', 'head', 'body', 'gaze'];
-  let n = 0;
-  for (const k of order) {
-    if (!caps[k]) continue;
-    n++;
-    const b = document.createElement('span');
-    b.className = 'label-chip';
-    b.textContent = CHIP_TEXT[k];
-    el.labels.appendChild(b);
-  }
+  // 能力标签：只列实际启用的（减少动态时用缩减后的那一组）
+  renderChips(S.reduced ? reducedCaps(caps) : caps);
 
   // 降级说明
   if (degraded) {
@@ -610,6 +726,9 @@ async function resumeWithFace(face) {
 
 /* ── 失败页 ── */
 function showError(text, advice, opts = {}) {
+  // P1-03：出错时清掉上一张图残留的舞台内容与能力标签。
+  // 否则错误面板已经出现，右侧画布还在播上一张图，用户会以为这张图生成成功了。
+  clearStage();
   setState('error');
   el.errorText.textContent = text;
   el.errorAdvice.innerHTML = '';
@@ -624,12 +743,19 @@ function showError(text, advice, opts = {}) {
   if (!opts.keepFile) {
     el.dzTitle.textContent = '把图片拖到这里';
   }
+  // P0-8：错误面板是 role="alert"，把焦点也移过去，读屏软件才能立即播报内容。
+  // 焦点落在标题（tabindex=-1）上，紧接着的正文与建议列表会一起被读出来。
+  requestAnimationFrame(() => {
+    const h = el.panelError && el.panelError.querySelector('#h-error');
+    if (h && typeof h.focus === 'function') h.focus();
+  });
 }
 
 function handlePipelineError(err) {
   if (err && err.code === 'E_ABORT') return;   // 用户主动取消，界面已复位
   stopTimer();
   const isTimeout = err && err.code === 'E_TIMEOUT';
+  const isSmall = err && err.code === 'E_SMALL';
   const msg = err && err.message ? err.message : '发生了未知错误。';
   showError(msg, isTimeout
     ? [
@@ -637,11 +763,13 @@ function handlePipelineError(err) {
         '把图片缩小一些（长边 1000px 左右通常就够用了）。',
         '关掉其他占资源的标签页，然后重新上传。',
       ]
-    : [
-        '重新上传一次这张图，通常可以解决偶发失败。',
-        '确认图片文件没有损坏，可以先用图片工具另存一份再拖进来。',
-        '如果是第一次使用，请检查网络是否正常——识别模型需要从本站静态资源下载。',
-      ], { retryLabel: '重试' });
+    : isSmall
+      ? adviceFor('small')
+      : [
+          '重新上传一次这张图，通常可以解决偶发失败。',
+          '确认图片文件没有损坏，可以先用图片工具另存一份再拖进来。',
+          '如果是第一次使用，请检查网络是否正常——识别模型需要从本站静态资源下载。',
+        ], { retryLabel: '重试' });
 }
 
 /* ── 播放控制 ── */
@@ -710,7 +838,7 @@ el.btnFpCancel.addEventListener('click', () => {
   el.dzTitle.textContent = '把图片拖到这里';
 });
 
-/* ── 导出 PNG（P0-14） ── */
+/* ── 导出 PNG（P0-14 / P0-1 修复） ── */
 let exportRenderer = null;
 function stamp() {
   const d = new Date();
@@ -722,11 +850,13 @@ el.btnExport.addEventListener('click', () => {
   if (!S.renderer || !S.rig || !S.img) return;
   try {
     if (!exportRenderer) {
-      const c = document.createElement('canvas');
-      exportRenderer = new Renderer(c);
-      exportRenderer.setImage(S.img.bitmap, S.img.width, S.img.height);
-      exportRenderer.setMesh(S.mesh);
+      exportRenderer = new Renderer(document.createElement('canvas'));
     }
+    // P0-1：纹理与网格每次导出都要重绑。
+    // 原来这两行写在 if (!exportRenderer) 里，只在该 Renderer 第一次创建时绑定，
+    // 换图后导出拿到的仍是上一张图的纹理与网格。
+    exportRenderer.setImage(S.img.bitmap, S.img.width, S.img.height);
+    exportRenderer.setMesh(S.mesh);
     exportRenderer.resize(S.img.width, S.img.height);
     exportRenderer.draw(S.motion.state, S.rig);
     const url = exportRenderer.canvas.toDataURL('image/png');
@@ -774,6 +904,16 @@ if (typeof ResizeObserver !== 'undefined') {
 function loop(now) {
   S.raf = requestAnimationFrame(loop);
   if (!S.motion || !S.renderer || !S.rig) return;
+  // 测试接缝：定格到指定 eyeOpen 后只重绘、不推进动画（仅 ?debug=1 时可用）
+  if (S.freezeEyeOpen !== null && S.freezeEyeOpen !== undefined) {
+    S.motion.paused = true;
+    S.motion.state.eyeOpen = S.freezeEyeOpen;
+    S.renderer.draw(S.motion.state, S.rig);
+    window.__mas = Object.assign(window.__mas || {}, {
+      eyeOpen: S.freezeEyeOpen, state: S.mode, mode: S.rig.mode, frozen: true,
+    });
+    return;
+  }
   const dt = S.lastT ? Math.min(0.05, (now - S.lastT) / 1000) : 0.016;
   S.lastT = now;
   S.motion.paused = !S.playing;
@@ -799,6 +939,11 @@ function loop(now) {
       blinks: S.motion.blinkCount,
       drawMs: S.drawN ? +(S.drawAcc / S.drawN).toFixed(2) : 0,
       t: nowMs,
+      reducedMotion: S.reduced,
+      breath: S.motion.state.breath,
+      bodyAngleZ: S.motion.state.bodyAngleZ,
+      angleX: S.motion.state.angleX,
+      angleY: S.motion.state.angleY,
     });
   }
 }
@@ -882,3 +1027,24 @@ startEmptyMesh();
 /* ── 启动 ── */
 setState('idle');
 window.__mas = { fps: 0, state: 'idle', version: '1.0.0' };
+
+/* 测试接缝：仅在 ?debug=1 时挂载，用于把动画定格到指定 eyeOpen 后取帧。
+   生产环境不暴露任何改写入口。 */
+if (typeof location !== 'undefined' && /[?&]debug=1\b/.test(location.search)) {
+  window.__masDebug = {
+    freezeEye(open) {
+      if (!S.motion || !S.renderer || !S.rig) return null;
+      S.freezeEyeOpen = Number(open);
+      S.motion.paused = true;
+      S.motion.state.eyeOpen = S.freezeEyeOpen;
+      S.renderer.draw(S.motion.state, S.rig);
+      return { eyeOpen: S.freezeEyeOpen, mode: S.rig.mode };
+    },
+    resumeEye() {
+      S.freezeEyeOpen = null;
+      if (!S.motion) return null;
+      S.motion.paused = false;
+      return { frozen: null };
+    },
+  };
+}

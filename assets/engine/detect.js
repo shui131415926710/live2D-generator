@@ -7,6 +7,39 @@
 const MODEL_URL = './models/face_landmarker.task';
 const WASM_BASE = './vendor/';
 
+/** P0-2：单次检测最多收集几张脸。与 FaceLandmarker 的 numFaces 保持一致。 */
+const MAX_FACES = 4;
+
+/* ───────────── P1-04：拦掉 MediaPipe 自带的使用统计上报 ─────────────
+
+   vendor/vision_bundle.mjs 里打包了一个统计客户端，会向
+   https://odml.pa.googleapis.com/v1/log 以 protobuf POST 上报调用事件
+   （60 秒定时 flush，事件非空才发送）。站点对外声明「本地处理 · 不上传」，
+   这条上报与声明不符，因此在应用层按主机名精确拦截。
+
+   只拦这一个 host；其余请求（模型、WASM、图片）原样放行。
+   拦截后该客户端会拿到 200 空响应并清空队列，不影响检测功能。
+   ────────────────────────────────────────────────────────────── */
+const MP_TELEMETRY_HOST = 'odml.pa.googleapis.com';
+
+export function blockMediaPipeTelemetry() {
+  if (typeof window === 'undefined' || window.__mpTelemetryBlocked) return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function patchedFetch(input, init) {
+    let url = '';
+    try {
+      url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    } catch { url = ''; }
+    if (url.indexOf(MP_TELEMETRY_HOST) !== -1) {
+      // 静默丢弃：给一个合法的空 200，让上游自己的回调走成功分支
+      return Promise.resolve(new Response('', { status: 200, statusText: 'OK' }));
+    }
+    return nativeFetch(input, init);
+  };
+  window.__mpTelemetryBlocked = true;
+}
+
+
 /** 生成 3 档头部候选框（均放大到长边约 512 后送检）。 */
 export function headCandidates(img) {
   const { width: W, height: H, bbox } = img;
@@ -122,7 +155,7 @@ export function loadLandmarker(onProgress = () => {}) {
       outputFaceBlendshapes: false,
       outputFacialTransformationMatrixes: false,
       runningMode: 'IMAGE',
-      numFaces: 4,
+      numFaces: MAX_FACES,
       minFaceDetectionConfidence: 0.5,
       minFacePresenceConfidence: 0.5,
       minTrackingConfidence: 0.5,
@@ -194,8 +227,11 @@ export async function detectFaces(img, onProgress = () => {}) {
         center: { x: cx, y: cy },
       });
     }
-    // 一档命中且只有一张脸，就没必要继续试其它档（省时间）
-    if (faces.length === 1) break;
+    // P0-2 修复：不再「命中一张就 break」。
+    // numFaces 已配置为 4，必须把全部候选区域都跑完，才能拿到同一张画里的
+    // 第 2、3 张脸（双人合照在第一档往往只能检出 1 张）。
+    // 只有收满 numFaces 上限才提前结束，避免无意义的重复检测。
+    if (faces.length >= MAX_FACES) break;
   }
 
   onProgress(0.98, '检测完成');

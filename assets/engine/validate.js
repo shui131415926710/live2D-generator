@@ -6,7 +6,7 @@
 export const LIMITS = {
   maxBytes: 20 * 1024 * 1024,      // 20 MB
   maxEdge: 4096,                  // 单边上限
-  maxPixels: 16780000,            // 总像素 ≤ 1678 万
+  maxPixels: 16777216,            // 总像素 ≤ 16,777,216（≈1678 万，2^24）
   minShortSide: 256,              // 短边下限
 };
 
@@ -87,15 +87,18 @@ export function checkDimensions(width, height) {
   if (overEdge) scale = Math.min(scale, LIMITS.maxEdge / long);
   if (overPixels) scale = Math.min(scale, Math.sqrt(LIMITS.maxPixels / (width * height)));
 
-  const w = Math.max(LIMITS.minShortSide, Math.floor(width * scale));
-  const h = Math.max(LIMITS.minShortSide, Math.floor(height * scale));
+  // 用四舍五入而非向下取整：6000×4000 → 4096×2731（向下取整会得到 4096×2730）。
+  // 再夹回上限，避免取整后单边 / 总像素越界。
+  const clampW = (v) => Math.min(LIMITS.maxEdge, Math.max(LIMITS.minShortSide, Math.round(v)));
+  const w = clampW(width * scale);
+  const h = clampW(height * scale);
   return {
     ok: true,
     scale,
     width: w,
     height: h,
     downscaled: true,
-    reason: `原图 ${width}×${height} 超过 ${LIMITS.maxEdge}×${LIMITS.maxEdge} 上限，已为你缩小到 ${w}×${h}。`,
+    reason: `原图 ${width}×${height} 超过 ${LIMITS.maxEdge}×${LIMITS.maxEdge} 或 ${LIMITS.maxPixels} 像素上限，已为你缩小到 ${w}×${h}。`,
   };
 }
 

@@ -139,8 +139,8 @@ export async function normalize(file, format, onProgress = () => {}) {
     throw err;
   }
 
-  // 第二道：长边超过 1600 一律降采样（技术方案 §4.3 的量化依据）
-  const LONG_TARGET = 1600;
+  // P0-4：缩放策略统一由 validate.checkDimensions 决定（单边 4096 / 总像素 1678 万）。
+  // 这里只负责落实它的结果，不再自己定一套「长边 1600」的规则去覆盖它。
   let outBmp = bitmap;
   let didDownscale = !!dim.downscaled;
   let finalW = bitmap.width;
@@ -149,11 +149,10 @@ export async function normalize(file, format, onProgress = () => {}) {
   const srcW = bitmap.width;
   const srcH = bitmap.height;
 
-  const long = Math.max(bitmap.width, bitmap.height);
-  if (long > LONG_TARGET) {
-    const s = LONG_TARGET / long;
-    finalW = Math.round(bitmap.width * s);
-    finalH = Math.round(bitmap.height * s);
+  if (didDownscale) {
+    // checkDimensions 已按等比算好目标尺寸；仅在真正超限时才重采样一次
+    finalW = dim.width;
+    finalH = dim.height;
     try {
       outBmp = await createImageBitmap(bitmap, {
         resizeWidth: finalW,
@@ -161,24 +160,14 @@ export async function normalize(file, format, onProgress = () => {}) {
         resizeQuality: 'high',
       });
       bitmap.close?.();
-      didDownscale = true;
-      downscaleNote =
-        `原图 ${srcW}×${srcH} 已优化至 ${finalW}×${finalH} 以提升流畅度。`;
     } catch {
+      // 重采样失败就按原图继续，但不能谎称已缩放
       outBmp = bitmap;
       finalW = bitmap.width;
       finalH = bitmap.height;
+      didDownscale = false;
+      downscaleNote = null;
     }
-  } else if (didDownscale) {
-    // 满足 4096/1678 万约束但未超 1600 —— 仍需按 checkDimensions 的缩放执行
-    try {
-      outBmp = await createImageBitmap(bitmap, {
-        resizeWidth: finalW,
-        resizeHeight: finalH,
-        resizeQuality: 'high',
-      });
-      bitmap.close?.();
-    } catch { /* 保持原样 */ }
   }
 
   onProgress(9);

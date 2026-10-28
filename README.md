@@ -1,7 +1,6 @@
-# Mesh Avatar Studio · 网站版源码包
+# Gao Leng Shuishui · 网站版源码包
 
 上传一张图，在浏览器里自动生成一个会眨眼、会呼吸、会轻微转头的 2D 动画形象，并导出透明 PNG。
-本仓库即 [Mesh Avatar Studio](https://shui131415926710.github.io/live2D-generator/) 的完整源码，可直接以仓库根目录作为 GitHub Pages 发布源。
 **纯前端静态站点**：没有后端、没有数据库、没有构建步骤，图片不离开本机浏览器。
 
 在线版本：https://miaoda.feishu.cn/app/app_17gtathns92
@@ -26,7 +25,7 @@
 ## 二、目录结构
 
 ```
-live2D-generator/            （= 站点根目录，GitHub Pages 发布源为 main / (root)）
+mesh-avatar-studio/
 ├── index.html                  页面结构（六个状态面板 + 预览舞台）
 ├── assets/
 │   ├── app.css                 设计令牌、六态面板、响应式与动效
@@ -78,6 +77,7 @@ live2D-generator/            （= 站点根目录，GitHub Pages 发布源为 ma
 包内自带 `serve.py`，它只用 Python 标准库，并**显式把 `.wasm` 声明为 `application/wasm`**，避免某些环境把 WASM 当 `application/octet-stream` 导致加载失败：
 
 ```bash
+cd mesh-avatar-studio
 python3 serve.py            # 默认 http://127.0.0.1:5173
 # 或指定端口： python3 serve.py 8080
 ```
@@ -87,6 +87,7 @@ python3 serve.py            # 默认 http://127.0.0.1:5173
 用 `npx serve` 也行（`serve` 自带正确的 `.wasm` MIME 映射）：
 
 ```bash
+cd mesh-avatar-studio
 npx --yes serve@14 . --listen 5173
 ```
 
@@ -103,6 +104,7 @@ rclone serve http . --addr 127.0.0.1:5173
 ### 方式二：npm 一键脚本（需要 Node.js ≥ 18）
 
 ```bash
+cd mesh-avatar-studio
 npm install     # 本包无 dependencies，这一步只准备 npm 环境，可以跳过
 npm run dev     # 等价于 npx serve@14 . --listen 5173
 ```
@@ -132,7 +134,7 @@ location / {
 
 按顺序核对，前 4 条不用上传图片就能确认：
 
-1. **打开首页**：深色页面，顶部左侧是「Mesh Avatar Studio / 2D 动画形象生成器」品牌区，右上角有「本地处理 · 不上传」徽标。
+1. **打开首页**：深色页面，顶部左侧是「Gao Leng Shuishui / 2D 动画形象生成器」品牌区（左侧图标为 `assets/brand-icon.jpg`，也用作 favicon），右上角有「本地处理 · 不上传」徽标。
 2. **左栏标题**为「上传一张图 / 让它自己动起来」，下方是一个虚线框拖放区，写着「把图片拖到这里」和「或 点击选择文件 · 也支持 Ctrl/⌘ + V 粘贴」。
 3. **右栏「预览舞台」**里有一个正在缓慢起伏的线框网格动画（不是静态图），下方有一行「等待一张立绘」。
 4. **浏览器控制台无红色报错**。如果控制台出现 `Failed to load module script` 或 `WebAssembly` 相关错误，基本都是 MIME / `file://` 问题，回看上一节。
@@ -189,6 +191,8 @@ MediaPipe 在二次元立绘上的整图检出率不高，本站用 4 路头部�
 
 你可以自己验证：打开 DevTools → Network 面板，勾选保留日志，上传一张图，检查所有请求——除了同源的 `.task` / `.wasm` / `.js` / `.css`，不应出现任何携带图片内容的请求（没有 POST、没有第三方域名）。
 
+**关于 MediaPipe 自带的使用统计（已拦截）**：`vendor/vision_bundle.mjs` 里打包了一个统计客户端，原本会在检测后向 `https://odml.pa.googleapis.com/v1/log` 以 protobuf 上报调用事件。这条上报不携带图片，但属于第三方域名，与上面那句徽标冲突。`assets/engine/detect.js` 里的 `blockMediaPipeTelemetry()` 在模块加载时按主机名精确拦截该请求（只拦这一个 host，模型 / WASM / 图片请求原样放行），`app.js` 在加载检测器之前调用它。拦截后该客户端收到空 200 并清空队列，检测功能不受影响。
+
 ---
 
 ## 七、已知限制
@@ -199,6 +203,8 @@ MediaPipe 在二次元立绘上的整图检出率不高，本站用 4 路头部�
 - **大角度转头会穿帮**：单层立绘在大角度下会露出没有内容的"背面"，因此转头幅度刻意限制在很小范围。
 - **二次元立绘检出率有限**：兜底路径（形状先验）会被较频繁地走到，表现是「会呼吸但不太会眨眼」，界面上有明确提示。
 - **Safari 上的 GIF**：优先用 WebCodecs `ImageDecoder` 取首帧，不支持时回退到 `<img>` 解码，取到的可能是首帧但也可能不确定。
+- **检测模型跑在主线程上，没有放进 Worker**：约 3.6 MB 的 `face_landmarker.task` 推理在 UI 线程执行，处理期间画面会有短暂卡顿；进度条与「取消」按钮仍然可用，但不是零阻塞。放进 Worker 需要把 WASM 与模型一起搬过去，本期没有做。
+- **眨眼计时**：主循环的 `dt` 被夹在 50ms，早期版本的眨眼间隔在低帧率设备上会被拉长（实测出现超过 6s 才眨一次）。现在眨眼倒计时改用 `performance.now()` 的真实耗时，不再受帧率影响。
 - **没有构建流程、没有单元测试套件**：校验模块是纯函数，可以直接在浏览器 console 里调用，但包内未附测试框架。
 
 ---

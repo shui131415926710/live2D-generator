@@ -3,26 +3,26 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Mesh Avatar Studio · 上传一张图，让它动起来</title>
-<meta name="description" content="在浏览器里把一张立绘变成会眨眼、会呼吸的 2D 动画形象。图片不会离开你的设备。" />
+<title>Gao Leng Shuishui · 上传一张图，让它动起来</title>
+<meta name="description" content="Gao Leng Shuishui 是一个 2D 动画形象生成器：在浏览器里把一张立绘变成会眨眼、会呼吸的动画形象。图片不会离开你的设备。" />
+<meta property="og:title" content="Gao Leng Shuishui · 上传一张图，让它动起来" />
+<meta property="og:site_name" content="Gao Leng Shuishui" />
+<meta name="application-name" content="Gao Leng Shuishui" />
+<meta name="apple-mobile-web-app-title" content="Gao Leng Shuishui" />
 <link rel="stylesheet" href="./assets/app.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0D12'/%3E%3Cpath d='M6 22 L16 8 L26 22' stroke='%238B72FF' stroke-width='2' fill='none'/%3E%3Ccircle cx='16' cy='14' r='2.5' fill='%233DD6D0'/%3E%3C/svg%3E" />
+<link rel="icon" type="image/jpeg" href="./assets/favicon.jpg" />
+<link rel="apple-touch-icon" href="./assets/brand-icon.jpg" />
 </head>
 <body>
 <div class="app" id="app" data-state="idle">
 
   <header class="topbar">
-    <a class="brand" href="./" aria-label="Mesh Avatar Studio 首页">
+    <a class="brand" href="./" aria-label="Gao Leng Shuishui 首页">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="站标">
-          <rect width="32" height="32" rx="9" fill="#141821"/>
-          <path d="M6.5 22.5 L16 8.5 L25.5 22.5" stroke="#8B72FF" stroke-width="1.8" fill="none" stroke-linecap="round"/>
-          <path d="M10.5 22.5 L16 14 L21.5 22.5" stroke="#3DD6D0" stroke-width="1.2" fill="none" opacity=".55" stroke-linecap="round"/>
-          <circle cx="16" cy="14.6" r="2.2" fill="#3DD6D0"/>
-        </svg>
+        <img class="brand-img" src="./assets/brand-icon.jpg" width="32" height="32" alt="" />
       </span>
       <span class="brand-text">
-        <span class="brand-name">Mesh Avatar Studio</span>
+        <span class="brand-name">Gao Leng Shuishui</span>
         <span class="brand-sub">2D 动画形象生成器</span>
       </span>
     </a>
@@ -151,8 +151,8 @@
       </div>
 
       <!-- 失败态 -->
-      <div class="panel panel-error" id="panel-error" hidden aria-labelledby="h-error">
-        <h2 id="h-error" class="title-sm">没能生成这个头像</h2>
+      <div class="panel panel-error" id="panel-error" role="alert" aria-live="assertive" hidden aria-labelledby="h-error">
+        <h2 id="h-error" class="title-sm" tabindex="-1">没能生成这个头像</h2>
         <p class="error-text" id="error-text"></p>
         <ul class="advice" id="error-advice"></ul>
         <div class="btn-row">

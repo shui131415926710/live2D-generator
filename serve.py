@@ -58,7 +58,7 @@ def main():
     handler = functools.partial(Handler, directory=ROOT)
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer((host, port), handler) as httpd:
-        print("Mesh Avatar Studio 本地服务已启动")
+        print("Gao Leng Shuishui 本地服务已启动")
         print("  打开:  http://%s:%d/" % ("127.0.0.1" if host == "0.0.0.0" else host, port))
         print("  根目录: %s" % ROOT)
         print("  Ctrl+C 停止")
