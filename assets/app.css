@@ -297,20 +297,14 @@ button { font: inherit; color: inherit; }
 .dz-link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .dz-formats { font-size: var(--t-note); color: var(--text-3); font-family: var(--font-mono); letter-spacing: .01em; }
 
-/* N-3（P1）：原来是 display:flex，把内联的 <strong> 变成了独立 flex item，
-   整句被拆成三列、句号孤悬（1280 与 390 都可见）。这是 F-13 诚信声明句，
-   必须整句连续可读 —— 改成两列 grid，图标占第一列、**整段文本包在第二列的
-   <span class="pn-text"> 里**，内联元素留在 span 内部，不会再被拆开。 */
 .privacy-note {
-  display: grid; grid-template-columns: 14px minmax(0, 1fr);
-  align-items: start; gap: var(--s-2);
+  display: flex; align-items: flex-start; gap: var(--s-2);
   margin-top: var(--s-3);
   font-size: var(--t-note);
   color: var(--text-3);
   line-height: 1.55;
 }
-.privacy-note .pn-text { display: block; min-width: 0; }
-.privacy-note svg { display: block; grid-column: 1; margin-top: 2px; color: var(--cyan); }
+.privacy-note svg { flex: none; margin-top: 0; color: var(--cyan); }
 .privacy-note strong { color: var(--text-2); font-weight: 600; }
 
 .features {
