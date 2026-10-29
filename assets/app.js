@@ -11,7 +11,8 @@ import { detectFaces, loadLandmarker, detectorState, blockMediaPipeTelemetry } f
 import { buildPreciseRig, buildPriorRig, buildMinimalRig } from './engine/rig.js';
 import { buildMesh } from './engine/mesh.js';
 import { Motion } from './engine/motion.js';
-import { Renderer } from './engine/renderer.js';
+import { Renderer, lidY, EYE_CLOSE_FLOOR } from './engine/renderer.js';
+import { buildEyePatch } from './engine/patch.js';
 
 // P1-04：在任何检测逻辑之前装好拦截，确保统计上报请求发不出去。
 blockMediaPipeTelemetry();
@@ -377,16 +378,24 @@ async function startPipeline(file, format, opts = {}) {
     el.fileStatus.textContent = '未上传 · 仅在本机浏览器内处理';
 
     // PRD §4.7：无透明背景在 S1 就提示
-    // P1-01：GIF 只取首帧，必须如实说明，不能让用户以为会动
-    if (img.gifFrameCount && img.gifFrameCount > 1) {
-      el.progressSub.textContent =
-        `已取第 1 帧（这份 GIF 共 ${img.gifFrameCount} 帧）——本工具只处理静态单帧。`;
-    }
+    // P1-01 / N-2：GIF 只取首帧必须如实说明。
+    // 这里用**拼接**而不是覆盖：GIF 几乎必然无 alpha，上一版先写 GIF 提示、
+    // 6 行后再被 noTransparency 分支整体覆盖，导致「已取第 1 帧」100% 不可达。
+    const gifNote = (img.gifFrameCount && img.gifFrameCount > 1)
+      ? `已取第 1 帧（这份 GIF 共 ${img.gifFrameCount} 帧）——本工具只处理静态单帧。`
+      : '';
+    const alphaNote = img.noTransparency
+      ? '这张图没有透明背景，处理后会保留背景；想要透明效果请用带透明通道的 PNG。'
+      : '';
 
     if (img.noTransparency) {
       el.fileStatus.className = 'file-status is-warn';
       el.fileStatus.textContent = '这张图没有透明背景，处理后会保留背景。';
-      el.progressSub.textContent = '这张图没有透明背景，处理后会保留背景；想要透明效果请用带透明通道的 PNG。';
+    }
+    // 优先级：GIF 帧数（用户最需要知道的「它不会动」）> 无透明 > 降采样说明
+    const subs = [gifNote, alphaNote].filter(Boolean);
+    if (subs.length) {
+      el.progressSub.textContent = subs.join(' ');
     } else if (img.downscaleNote) {
       el.progressSub.textContent = img.downscaleNote;
     }
@@ -489,6 +498,39 @@ async function buildAndPlay(img, face, opts = {}) {
   S.renderer.setImage(img.bitmap, img.width, img.height);
   S.renderer.setMesh(mesh);
 
+  /* P0-3：预生成闭眼贴片（每张图一次，纯本地、来自原图自身皮肤）。
+     v5 收口：贴片构建阶段先判「眼周可行性」。判不过（头发/深色眼影遮挡、
+     供体面积不足、环带无合格肤色）就**整图不启用眨眼**——宁可少一个动画，
+     也不要闭眼时露出一块瑕疵椭圆。呼吸/转头/摆动完全不受影响。 */
+  let patch = null, guard = null;
+  try {
+    patch = buildEyePatch(img.bitmap, rig, img.width, img.height);
+    guard = patch && patch.guard ? patch.guard : null;
+  } catch (e) {
+    patch = null; guard = null;
+  }
+  if (patch && patch.canvas) {
+    S.patch = patch;
+    S.renderer.setPatch(patch.canvas, patch.rect);
+    S.patchInfo = { rect: patch.rect, donor: patch.donor, guard };
+  } else {
+    S.patch = null;
+    S.renderer.setPatch(null, null);
+    S.patchInfo = { rect: patch ? patch.rect : null, donor: patch ? patch.donor : null, guard };
+  }
+
+  // 闸门结论落到能力表：任一眼不可用 → 整图 blink=false（双眼同步，不出现 wink）
+  const eyeGuardOk = !!(guard && guard.feasible);
+  if (!eyeGuardOk && caps.blink) {
+    caps.blink = false;
+    caps.blinkOffReason = (guard && guard.eyes)
+      ? guard.eyes.filter((e) => !e.feasible)
+        .map((e) => `眼${e.eye}：${e.reasons.join('、')}`).join('；')
+      : '眼周遮挡检测未通过';
+  }
+  S.caps = caps;
+  S.eyeGuard = guard;
+
   S.motion = new Motion(rig, caps);
   // P0-9：从第一帧就应用系统偏好，不要等用户切换一次才生效
   S.motion.setReducedMotion(prefersReduced());
@@ -505,7 +547,10 @@ async function buildAndPlay(img, face, opts = {}) {
   el.stageMeta.textContent =
     `${img.width}×${img.height} · ${mesh.stats.vertices.toLocaleString('en-US')} 顶点 · ${
       rig.mode === 'precise' ? '精确模式' : rig.mode === 'prior' ? '形状先验' : '整体动效'
-    }`;
+    }${caps.blinkOffReason ? ' · 眼周遮挡，未启用眨眼' : ''}`;
+
+  // 眼周遮挡的轻提示（成本低就加）：只在「本来能眨眼、但因为遮挡被关掉」时出现
+  el.stageHint.textContent = caps.blinkOffReason ? '眼周有遮挡，已自动不启用眨眼' : '';
 
   // 画第一帧
   const st = S.motion.state;
@@ -633,6 +678,12 @@ function showResult(rig, caps, img, degraded) {
 
 /* ── 说明页：没有找到人脸（PRD §4.2 / P0-12） ── */
 function showNoFace() {
+  // N-1（P1）：与 PDF 等通用错误路径**完全一致**地复位。
+  // 上一版这里直接 setState('error')，没有 clearStage()、也没有焦点转移：
+  // 先成功生成一张图、再拖入风景图时，右侧画布仍在播上一张图的动画、
+  // 能力标签仍为 5 项、stage-meta 仍是上一张图、data-empty 仍为 false、
+  // 焦点停在 BODY（读屏不播报）。这同时是 P0-8「部分关闭」的原因。
+  clearStage();
   setState('error');
   el.errorText.textContent =
     '没有找到清晰的人脸。这张图可能不是人物立绘，或者人物太小、太侧。';
@@ -650,6 +701,11 @@ function showNoFace() {
   el.btnForce.textContent = '仍然尝试生成（按形状先验估算，效果可能不符合预期）';
   el.btnRetry.textContent = '重新检测';
   el.dzTitle.textContent = '把图片拖到这里';
+  // N-1 / P0-8：焦点落到错误标题（tabindex=-1，role=alert 容器内），读屏立即播报
+  requestAnimationFrame(() => {
+    const h = el.panelError && el.panelError.querySelector('#h-error');
+    if (h && typeof h.focus === 'function') h.focus();
+  });
 }
 
 /* ── 多人脸选择态（PRD §4.3 / P0-11） ── */
@@ -944,6 +1000,15 @@ function loop(now) {
       bodyAngleZ: S.motion.state.bodyAngleZ,
       angleX: S.motion.state.angleX,
       angleY: S.motion.state.angleY,
+      // 测量用几何：眼区椭圆与眉的位置（供外部脚本裁 ROI、核对睑线 y，不改变渲染）
+      geo: S.rig ? {
+        img: [S.img.width, S.img.height],
+        canvas: [S.renderer.drawW, S.renderer.drawH],
+        eyeA: [S.rig.face.eyeA.cx, S.rig.face.eyeA.cy, S.rig.face.eyeA.rx, S.rig.face.eyeA.ry],
+        eyeB: [S.rig.face.eyeB.cx, S.rig.face.eyeB.cy, S.rig.face.eyeB.rx, S.rig.face.eyeB.ry],
+        brow: [S.rig.face.brow.cx, S.rig.face.brow.cy, S.rig.face.brow.rx, S.rig.face.brow.ry],
+        eyeDist: S.rig.face.eyeDist,
+      } : null,
     });
   }
 }
@@ -1031,6 +1096,195 @@ window.__mas = { fps: 0, state: 'idle', version: '1.0.0' };
 /* 测试接缝：仅在 ?debug=1 时挂载，用于把动画定格到指定 eyeOpen 后取帧。
    生产环境不暴露任何改写入口。 */
 if (typeof location !== 'undefined' && /[?&]debug=1\b/.test(location.search)) {
+  /* 全分辨率抓帧探针：**不暂停、不改状态**，只把「此刻正在播放的这一帧」
+     按原图分辨率重绘到离屏画布并返回 PNG。
+     用于以真实动画帧（而不是定格帧）做闭眼质量量化。 */
+  let probeRenderer = null;
+  let fullRenderer = null;
+
+  /* 低成本抓帧：直接从屏幕上正在显示的那块画布取像素（不重绘、不暂停、不改状态）。
+     用于以接近原生帧率连续采样真实动画帧。 */
+  window.__masProbe = {
+    shot() {
+      if (!S.renderer || !S.motion) return null;
+      const src = S.renderer.canvas;
+      const c = document.createElement('canvas');
+      c.width = src.width; c.height = src.height;
+      const g = c.getContext('2d');
+      g.drawImage(src, 0, 0);
+      return {
+        eyeOpen: +(+S.motion.state.eyeOpen).toFixed(4),
+        w: c.width, h: c.height,
+        png: c.toDataURL('image/png'),
+        fps: +(+S.fps).toFixed(1),
+        blinks: S.motion.blinkCount,
+        playing: S.playing,
+        frozen: S.freezeEyeOpen,
+      };
+    },
+    /* 全分辨率抓帧（原图分辨率）。贵（SwiftShader 填充率限制），只在需要定格取证时调用。 */
+    /* 睁眼零回归对照：同图 / 同帧 / 同尺寸，唯一差别是「有没有贴片」。
+       返回两张整幅 PNG，diff 由外部脚本逐像素比对。 */
+    fullCompare(open) {
+      if (!S.renderer || !S.rig || !S.img || !S.motion) return null;
+      const W = S.img.width, H = S.img.height;
+      const mk = (withPatch) => {
+        const c = document.createElement('canvas');
+        const r = new Renderer(c);
+        r.setImage(S.img.bitmap, W, H);
+        r.setMesh(S.mesh);
+        // 贴片真正参与渲染的最大开启度必须覆盖被测值：直接按 eyeOpen 算 mix
+        // 这里用同一个 setPatch / 不 setPatch 区分，逻辑完全一致
+        if (withPatch && S.patch) r.setPatch(S.patch.canvas, S.patch.rect);
+        r.resize(W, H);
+        return { c, r };
+      };
+      const st = Object.assign({}, S.motion.state, { eyeOpen: Number(open) });
+      const A = mk(true), B = mk(false);
+      A.r.draw(st, S.rig);
+      B.r.draw(st, S.rig);
+      return {
+        eyeOpen: +Number(open).toFixed(4),
+        a: A.c.toDataURL('image/png'),
+        b: B.c.toDataURL('image/png'),
+        img: [W, H],
+      };
+    },
+    full(opt) {
+      if (!S.renderer || !S.rig || !S.img || !S.motion) return null;
+      const o = opt || {};
+      if (!fullRenderer) fullRenderer = new Renderer(document.createElement('canvas'));
+      if (fullRenderer.imageId !== S.renderer.imageId) {
+        fullRenderer.setImage(S.img.bitmap, S.img.width, S.img.height);
+      }
+      if (fullRenderer.meshVersion !== S.renderer.meshVersion) {
+        fullRenderer.setMesh(S.mesh);
+      }
+      if (S.patch && fullRenderer.patchVersion !== S.renderer.patchVersion) {
+        fullRenderer.setPatch(S.patch.canvas, S.patch.rect);
+      }
+      fullRenderer.resize(S.img.width, S.img.height);
+      fullRenderer.draw(S.motion.state, S.rig);
+
+      const full = fullRenderer.canvas;
+      // ROI 必须覆盖**双眼并集**。旧实现只按 eyeA 计算（padX=1.7*rxA），
+      // 眼 B 在 cx=748.9 时右半边被 ROI 硬切 → 量到的是"半椭圆"，
+      // 这是测量口子的缺陷，不是渲染缺陷（历史误判来源之一）。
+      const eA = S.rig.face.eyeA, eB = S.rig.face.eyeB;
+      const padX = (o.padX !== undefined ? o.padX : 3.4);
+      const padY = (o.padY !== undefined ? o.padY : 1.5);
+      const x0 = Math.max(0, Math.round(Math.min(eA.cx - padX * eA.rx, eB.cx - padX * eB.rx)));
+      const y0 = Math.max(0, Math.round(Math.min(eA.cy - padY * eA.ry, eB.cy - padY * eB.ry)));
+      const x1 = Math.min(S.img.width, Math.round(Math.max(eA.cx + padX * eA.rx, eB.cx + padX * eB.rx)));
+      const y1 = Math.min(S.img.height, Math.round(Math.max(eA.cy + padY * eA.ry, eB.cy + padY * eB.ry)));
+      const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const g = c.getContext('2d');
+      g.drawImage(full, x0, y0, w, h, 0, 0, w, h);
+      return {
+        eyeOpen: +(+S.motion.state.eyeOpen).toFixed(4),
+        roi: [x0, y0, w, h],
+        png: c.toDataURL('image/png'),
+        geo: {
+          img: [S.img.width, S.img.height],
+          eyeA: [S.rig.face.eyeA.cx, S.rig.face.eyeA.cy, S.rig.face.eyeA.rx, S.rig.face.eyeA.ry],
+          eyeB: [S.rig.face.eyeB.cx, S.rig.face.eyeB.cy, S.rig.face.eyeB.rx, S.rig.face.eyeB.ry],
+          brow: [S.rig.face.brow.cx, S.rig.face.brow.cy, S.rig.face.brow.rx, S.rig.face.brow.ry],
+          chinY: S.rig.face.chinY,
+        },
+      };
+    },
+    /* 顶点级探针：把 eyeA/eyeB 权重 >0.001 的顶点在「压缩前 / 压缩后」的 y 范围读出来，
+       直接证明几何压缩到底压了多少，不依赖任何像素推断。 */
+    eyeVertices(open) {
+      if (!S.rig || !S.mesh || !S.renderer) return null;
+      const R = S.renderer;
+      const mesh = S.mesh;
+      // 用冻结值重画一帧（只影响本次读数，不改真实播放）
+      const prev = S.freezeEyeOpen;
+      window.__masDebug.freezeEye(open);
+      const b = mesh.bake, rest = mesh.rest, pos = mesh.pos;
+      const out = { eyeOpen: open, eyes: {} };
+      for (const key of ['A', 'B']) {
+        const kk = key === 'A' ? b.kEyeA : b.kEyeB;
+        const eye = key === 'A' ? S.rig.face.eyeA : S.rig.face.eyeB;
+        // 分权重档统计：w≥0.9（睑裂核心，虹膜就在这一档）、w≥0.5、w>0.001（含边界）
+        const bands = { core: { w: 0.9 }, mid: { w: 0.5 }, any: { w: 0.001 } };
+        for (const kk2 of Object.keys(bands)) {
+          bands[kk2].rMin = 1e9; bands[kk2].rMax = -1e9;
+          bands[kk2].pMin = 1e9; bands[kk2].pMax = -1e9; bands[kk2].n = 0;
+        }
+        let cnt = 0, wMax = 0;
+        for (let k = 0; k < mesh.n; k++) {
+          const w = kk[k];
+          if (!(w > 0.001)) continue;
+          cnt++;
+          if (w > wMax) wMax = w;
+          const y0 = rest[k * 2 + 1];
+          const y1 = pos[k * 2 + 1];
+          for (const kk2 of Object.keys(bands)) {
+            if (w < bands[kk2].w) continue;
+            const B2 = bands[kk2];
+            B2.n++;
+            if (y0 < B2.rMin) B2.rMin = y0;
+            if (y0 > B2.rMax) B2.rMax = y0;
+            if (y1 < B2.pMin) B2.pMin = y1;
+            if (y1 > B2.pMax) B2.pMax = y1;
+          }
+        }
+        const summarize = (B2) => (B2.n === 0 ? null : {
+          n: B2.n,
+          restSpan: +(B2.rMax - B2.rMin).toFixed(1),
+          defSpan: +(B2.pMax - B2.pMin).toFixed(1),
+          ratio: +(defSpanOf(B2)).toFixed(3),
+        });
+        function defSpanOf(B2) {
+          const rs = B2.rMax - B2.rMin;
+          return rs > 0 ? (B2.pMax - B2.pMin) / rs : 0;
+        }
+        const rMin = bands.any.rMin, rMax = bands.any.rMax;
+        const pMin = bands.any.pMin, pMax = bands.any.pMax;
+        out.eyes[key] = {
+          n: cnt, wMax: +wMax.toFixed(4),
+          restY: [+rMin.toFixed(1), +rMax.toFixed(1)],
+          defY: [+pMin.toFixed(1), +pMax.toFixed(1)],
+          core: summarize(bands.core),
+          mid: summarize(bands.mid),
+          lidY: +lidY(eye, open).toFixed(1),
+        };
+      }
+      out.floor = EYE_CLOSE_FLOOR;
+      if (prev === null || prev === undefined) window.__masDebug.resumeEye();
+      else window.__masDebug.freezeEye(prev);
+      return out;
+    },
+    patch() {
+      if (!S.patchInfo) return null;
+      const base = {
+        rect: S.patchInfo.rect,
+        donor: S.patchInfo.donor,
+        guard: S.patchInfo.guard || null,
+        hasCanvas: !!(S.patch && S.patch.canvas),
+      };
+      if (!S.patch || !S.patch.canvas) return { ...base, url: null, w: 0, h: 0 };
+      return {
+        ...base,
+        url: S.patch.canvas.toDataURL('image/png'),
+        w: S.patch.canvas.width, h: S.patch.canvas.height,
+      };
+    },
+    geom() {
+      if (!S.rig) return null;
+      return {
+        img: [S.img.width, S.img.height],
+        canvas: [S.renderer.drawW, S.renderer.drawH],
+        eyeA: [S.rig.face.eyeA.cx, S.rig.face.eyeA.cy, S.rig.face.eyeA.rx, S.rig.face.eyeA.ry],
+        eyeB: [S.rig.face.eyeB.cx, S.rig.face.eyeB.cy, S.rig.face.eyeB.rx, S.rig.face.eyeB.ry],
+        brow: [S.rig.face.brow.cx, S.rig.face.brow.cy, S.rig.face.brow.rx, S.rig.face.brow.ry],
+      };
+    },
+  };
   window.__masDebug = {
     freezeEye(open) {
       if (!S.motion || !S.renderer || !S.rig) return null;
@@ -1045,6 +1299,36 @@ if (typeof location !== 'undefined' && /[?&]debug=1\b/.test(location.search)) {
       if (!S.motion) return null;
       S.motion.paused = false;
       return { frozen: null };
+    },
+    /* 测试接缝：把除 eyeOpen 之外的全部动效量钉成常量。
+       没有它时，sweep 取帧间头部角度/呼吸/注视仍在变，
+       同一份代码多次取帧的接缝数在 0/1/3 与 10/15/23 之间跳，无法作基线。 */
+    /* 取证：读回 renderer 本次实际写入 shader 的睑线 uniform（uLidA/uLidB/uClose/uLidW）。
+       判据③ 要求记录 lidY 在 eyeOpen=1/0.6/0.3/0.1/0 的取值，这里取的就是实际生效值，
+       不是旁边再算一遍公式。 */
+    lidUniform() {
+      if (!S.renderer || !S.renderer.lastLid) return null;
+      const p = S.renderer.lastLid;
+      return {
+        eyeOpen: p.eyeOpen, lidA: Number(p.lidA.toFixed(3)), lidB: Number(p.lidB.toFixed(3)),
+        close: Number(p.close.toFixed(3)), lidW: p.lidW,
+        cyA: S.rig.face.eyeA.cy, cyB: S.rig.face.eyeB.cy,
+        ryA: S.rig.face.eyeA.ry, ryB: S.rig.face.eyeB.ry,
+        theoreticalA: Number((S.rig.face.eyeA.cy + S.rig.face.eyeA.ry * (1/1.35) * (1 - 2 * p.eyeOpen)).toFixed(3)),
+        theoreticalB: Number((S.rig.face.eyeB.cy + S.rig.face.eyeB.ry * (1/1.35) * (1 - 2 * p.eyeOpen)).toFixed(3)),
+      };
+    },
+    freezeMotion(vals) {
+      if (!S.motion || !S.renderer || !S.rig) return null;
+      const v = vals || {};
+      const st = S.motion.state;
+      for (const k of ['angleX', 'angleY', 'angleZ', 'bodyAngleZ',
+                       'breath', 'gazeX', 'gazeY', 'browY', 'mouthOpen']) {
+        if (v[k] !== undefined) st[k] = Number(v[k]);
+      }
+      S.motion.paused = true;
+      S.renderer.draw(st, S.rig);
+      return { state: Object.assign({}, st) };
     },
   };
 }
